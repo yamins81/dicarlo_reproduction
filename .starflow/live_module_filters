@@ -6,3 +6,4 @@
 #Lines beginning with a hash mark (like this one) will be ignored.
 ../v1
 ../generated_code
+../get_data.py

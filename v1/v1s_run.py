@@ -35,8 +35,8 @@ def initialize(creates = COMP_ROOT):
 
 
 @protocolize()
-def v1s_simple(depends_on = ('../v1/params_simple.py','../data/101_ObjectCategories')):
-    D = v1s_protocol(depends_on[0],depends_on[1],os.path.join(COMP_ROOT,'simple/'))
+def v1s_simple(depends_on = '../v1/params_simple.py'):
+    D = v1s_protocol(depends_on,'../data/101_ObjectCategories',os.path.join(COMP_ROOT,'simple/'))
     actualize(D)
     
     

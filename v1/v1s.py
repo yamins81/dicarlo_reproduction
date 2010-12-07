@@ -43,6 +43,7 @@ def run_one_trial(param_fname,img_path,result_file):
     
     out_file = open(result_file,'w')
     pickle.dump(r,out_file)
+    
 
 
 # -----------------------------------------------------------------------------
@@ -85,11 +86,75 @@ class V1S(object):
 
 
     def _run_one_trial(self,model,pca_threshold):
-
-        filelist = self.filelist
+        filelists_dict = self._shuffle_images()
+        
+        # -- Get training examples
+        #   (i.e. read in the images, apply the model, and construct a 
+        #    feature vector)
+        #   The first ntrain examples (of the shuffled list) will be used for
+        #   training.
+        print "="*80
+        print "Training..."
+        print "="*80        
         ntrain = self.ntrain
-        ntest = self.ntest        
+        train_fvectors, train_flabels, train_fnames = \
+                        self._get_fvectors_flabels_fnames(filelists_dict,
+                                                          model, 0, ntrain)                                           
+        print "training samples:", len(train_fnames)
+        
+        #sphere the data
+        train_fvectors, v_sub, v_div = self._sphere(train_fvectors)
+        
+        #reduce dimensions
+        train_fvectors, eigvectors = self._dimr(train_fvectors,pca_threshold)
+        
+        #train SVM
+        classifier = self._train_svm(train_fvectors,train_flabels,filelists_dict) 
+        
+        #get test features
+        print "="*80
+        print "Testing..."
+        print "="*80 
+        # -- A "hook" function to pass in that performs the 
+        #    sphering/projection according to parameters obtained from the
+        #    training data
+        nvectors , vsize = train_fvectors.shape
+        if nvectors < vsize:
+            hook = lambda vector: scipy.dot(((vector-v_sub) / v_div), eigvectors)
+        else:
+            hook = lambda vector: ((vector-v_sub) / v_div)
+        ntest = self.ntest     
+        # -- Get testing examples
+        test_fvectors, test_flabels, test_fnames = \
+                       self._get_fvectors_flabels_fnames(filelists_dict, model,
+                                                         ntrain, ntrain+ntest,
+                                                         hook)
+        print "testing samples:", len(test_fnames)
+        
+        #safety check
+        self._safety_check(test_fnames,train_fnames)
+        
+        #test svm
+        results = self._test_svm(test_fvectors,test_flabels,classifier)
+        return results
+  
+        
+    def _test_svm(self,test_fvectors,test_flabels,clas):    
+        test_data = self._get_data(test_fvectors,test_flabels)
+        
+        self._labels = clas.labels.classLabels
+        
+        print "testing..."
+        results = clas.test(test_data)
+        results.computeStats()
     
+        return results
+ 
+ 
+    def _shuffle_images(self):
+    
+        filelist = self.filelist
+         
         # -- Organize images into the appropriate categories
         cats = {}
         for f in filelist:
@@ -109,37 +174,31 @@ class V1S(object):
             self.seed += 1
             filelist = [ cat + '/' + f for f in filelist ]
             filelists_dict[cat] = filelist
-    
-        # -- Get training examples
-        #   (i.e. read in the images, apply the model, and construct a 
-        #    feature vector)
-        #   The first ntrain examples (of the shuffled list) will be used for
-        #   training.
-        print "="*80
-        print "Training..."
-        print "="*80
-    
-        train_fvectors, train_flabels, train_fnames = \
-                        self._get_fvectors_flabels_fnames(filelists_dict,
-                                                          model, 0, ntrain)
-        print "training samples:", len(train_fnames)
+            
+        return filelists_dict
+
+    def _sphere(self,fvectors):  
     
         # -- Sphere the training data
         #    (we will later use the sphering parameters obtained here to
         #     "sphere" the test data)
         print "sphering data..."
-        v_sub = train_fvectors.mean(axis=0)
-        train_fvectors -= v_sub
-        v_div = train_fvectors.std(axis=0)
+        v_sub = fvectors.mean(axis=0)
+        fvectors -= v_sub
+        v_div = fvectors.std(axis=0)
         scipy.putmask(v_div, v_div==0, 1)
-        train_fvectors /= v_div
+        fvectors /= v_div
+        return fvectors, v_sub, v_div
         
+  
+    def _dimr(self,fvectors,pca_threshold):
+    
         # -- Reduce dimensionality using a pca / eigen subspace projection
-        nvectors, vsize = train_fvectors.shape        
+        nvectors, vsize = fvectors.shape        
         if nvectors < vsize:
             print "pca...", 
-            print train_fvectors.shape, "=>", 
-            U,S,V = v1s_math.fastsvd(train_fvectors)
+            print fvectors.shape, "=>", 
+            U,S,V = v1s_math.fastsvd(fvectors)
             eigvectors = V.T
             i = tot = 0
             S **= 2.
@@ -147,67 +206,43 @@ class V1S(object):
                 tot += S[i]/S.sum()
                 i += 1
             eigvectors = eigvectors[:, :i+1]
-            train_fvectors = scipy.dot(train_fvectors, eigvectors)
-    
-        # -- Train svm    
+            fvectors = scipy.dot(fvectors, eigvectors)
+       
+        return fvectors, eigvectors
+       
+   
+    def _get_data(self,fvectors,flabels):
         print "creating dataset..."
         if PyML.__version__ < "0.7.0":
-            train_data = PyML.datafunc.VectorDataSet(train_fvectors.astype(scipy.double),
-                                                L=train_flabels)
+            data = PyML.datafunc.VectorDataSet(fvectors.astype(scipy.double),
+                                                L=flabels)
         else:
-            train_data = PyML.containers.VectorDataSet(train_fvectors.astype(scipy.double),
-                                                  L=train_flabels)
+            data = PyML.containers.VectorDataSet(fvectors.astype(scipy.double),
+                                                  L=flabels)     
+        return data
+        
+        
+    def _train_svm(self,train_fvectors,train_flabels,classlist_dict):     
+        train_data = self._get_data(train_fvectors,train_flabels)
+
         print "creating classifier..."
-        if len(filelists_dict) > 2:
+        if len(classlist_dict) > 2:
             clas = multi.OneAgainstRest(svm.SVM())
         else:
             clas = PyML.svm.SVM()
         print "training svm..."
         clas.train(train_data)
-    
-        # -- Get testing examples
-        #    (read files, apply model, sphere using parameters from training
-        #    data, project onto eigensubspace obtained from training data)
-        print "="*80
-        print "Testing..."
-        print "="*80
-    
-        # -- A "hook" function to pass in that performs the 
-        #    sphering/projection according to parameters obtained from the
-        #    training data
-        if nvectors < vsize:
-            hook = lambda vector: scipy.dot(((vector-v_sub) / v_div), eigvectors)
-        else:
-            hook = lambda vector: ((vector-v_sub) / v_div)
-    
-        test_fvectors, test_flabels, test_fnames = \
-                       self._get_fvectors_flabels_fnames(filelists_dict, model,
-                                                         ntrain, ntrain+ntest,
-                                                         hook)
-        print "testing samples:", len(test_fnames)
         
+        return clas
+   
+   
+    def _safety_check(self,test_fnames,train_fnames):
         # a safety check that there are no duplicates across the test and 
         # train sets
         for test in test_fnames:
             if test in train_fnames:
                 raise ValueError, "image already included in train set"
-    
-        # -- Test trained svm    
-        print "creating dataset..."
-        if PyML.__version__ < "0.7.0":
-            test_data = PyML.datafunc.VectorDataSet(test_fvectors.astype(scipy.double),
-                                               L=test_flabels)
-        else:
-            test_data = PyML.containers.VectorDataSet(test_fvectors.astype(scipy.double),
-                                                 L=test_flabels)
-        self._labels = clas.labels.classLabels
-        
-        print "testing..."
-        results = clas.test(test_data)
-        results.computeStats()
-    
-        print results
-        return results
+
 
 
     # -------------------------------------------------------------------------
@@ -491,3 +526,6 @@ class V1S(object):
             
         return self._filt_l
        
+       
+class V1S_seq(object):
+    pass       
