@@ -40,7 +40,7 @@ def generate_metadata(objname,forced=False,use=100):
                 D = {}
                 L = [objname + ll for ll in listdir(objname) if not ll.startswith('.')]
                 for l in L:
-                    D.update(GenerateAutomaticMetaData(l,forced=forced))
+                    D.update(generate_metadata(l,forced=forced))
                 LL = set(L).intersection(D.keys())
                 D[objname] = IntegrateDirMetaData([D[l] for l in LL])
                 return D
@@ -69,7 +69,7 @@ def generate_metadata(objname,forced=False,use=100):
         try:
             return {objname:pickle.load(open(metapath+'/AutomaticMetaData.pickle','r'))}
         except:
-            return GenerateAutomaticMetaData(objname,forced=True)
+            return generate_metadata(objname,forced=True)
 
 def is_hsv_dir(x):
     return hasattr(x,'endswith') and x.endswith('.hsv')
