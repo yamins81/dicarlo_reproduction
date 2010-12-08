@@ -5,7 +5,7 @@ import os
 import time
 import cPickle as pickle
 
-from starflow.utils import activate
+from starflow.utils import activate, RecursiveFileList
 
 from itertools import izip, count
 
@@ -153,7 +153,7 @@ class V1S(object):
             
         
     def _test_svm(self,test_fvectors,test_flabels,clas):    
-        test_data = self._get_sparse_data(test_fvectors,test_flabels)
+        test_data = self._get_sparse_data(test_fvectors,test_flabels)     ##<== this is a hack RESOLVE
         
         self._labels = clas.labels.classLabels
         
@@ -706,12 +706,14 @@ def test_svm(param_fname,img_path,test_examples_file,classifier_file,result_file
     test_fvectors = test_examples['test_fvectors']
     test_flabels = test_examples['test_flabels']
 
-    classifier = PyML.classifiers.svm.loadSVM(classifier_file,labelsColumn=1)
+    classifier = PyML.classifiers.svm.loadSVM(classifier_file,labelsColumn=1)   
     
     results = V._test_svm(test_fvectors,test_flabels,classifier)
  
+    results_dict = {'results': results, 'labels' : V._labels}
+    
     F = open(result_file,'w')
-    pickle.dump(results,F)
+    pickle.dump(results_dict,F)
     F.close()   
     
     
@@ -744,4 +746,61 @@ def trial_protocol(param_fname,img_path,result_dir,prefix = '',make_container = 
           (prefix + 'test_svm', test_svm, (param_fname,img_path,test_examples_file,classifier_file,final_results_file))]
     
     return D    
+
+@activate(lambda x : x[0], lambda x : (x[1],x[2]))    
+def aggregate_results(results_dir,output_file,scores_file):
+
+    filelist = [x for x in RecursiveFileList(results_dir) if x.endswith('final_results.pickle')]
     
+    scores = []
+    for file in filelist:
+        results = pickle.load(open(file))
+        r = results['results']
+        labels = results['labels']
+        score = r.getBalancedSuccessRate()
+        scores.append(score)
+        sa = scipy.array(scores)*100.
+        
+        ind_scores = []
+        cm = scipy.array(r.getConfusionMatrix())            
+        catscores = []
+        for i in xrange(len(cm[:])):
+            good = cm[i,i]
+            tot = cm[:,i].sum()
+            catscore = 1.*good/tot
+            catscores += [catscore]
+        catscores = scipy.array(catscores)
+        sel = catscores.argsort()
+        i = 0
+        for s in sel:
+            label = labels[s]
+            ind_score = catscores[s]*100
+            ind_scores += [ " %3d - %6.2f %s \n" % \
+                            ((i+1), ind_score, label) ]
+            i += 1          
+            
+        out = open(output_file,'w')
+        out.write('=' * 80 + '\n')
+        out.write("Current trial: " + file + '\n')
+        out.write('-' * 80 + '\n')
+        out.write("Current score: %.2f" % (score*100.) + '\n')
+        out.write("Current individual scores:\n")
+        out.write("".join(ind_scores) + '\n')
+        out.write('-' * 80 + '\n')
+        
+    out.write("All scores:\n")
+    out.write("\n".join([ " (%d) %6.2f"%(i+1,s*100)
+                      for i,s in izip(count(),scores)]) + '\n')
+    out.write('-' * 80 + '\n')
+    mstd = sa.std()
+    mstderr = mstd/scipy.sqrt(sa.size)
+    out.write("Average: %.2f (std=%.2f, stderr=%.2f)" % \
+          (sa.mean(), mstd, mstderr) + '\n')
+    out.write('=' * 80)
+    
+    out.close()
+    
+    scores_out = open(scores_file,'w')
+    pickle.dump(scores,scores_out)
+        
+        
