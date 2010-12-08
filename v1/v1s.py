@@ -115,16 +115,13 @@ class V1S(object):
         print "="*80
         print "Testing..."
         print "="*80 
-        # -- A "hook" function to pass in that performs the 
-        #    sphering/projection according to parameters obtained from the
-        #    training data
-        nvectors , vsize = train_fvectors.shape
-        if nvectors < vsize:
-            hook = lambda vector: scipy.dot(((vector-v_sub) / v_div), eigvectors)
-        else:
-            hook = lambda vector: ((vector-v_sub) / v_div)
-        ntest = self.ntest     
+        
+        #get hook
+        hook_params = {'v_sub': v_sub, 'v_div' : v_div, 'eigvectors' : eigvectors}
+        hook = self._get_hook(train_fvectors,**hook_params) 
+         
         # -- Get testing examples
+        ntest = self.ntest    
         test_fvectors, test_flabels, test_fnames = \
                        self._get_fvectors_flabels_fnames(filelists_dict, model,
                                                          ntrain, ntrain+ntest,
@@ -137,10 +134,26 @@ class V1S(object):
         #test svm
         results = self._test_svm(test_fvectors,test_flabels,classifier)
         return results
+        
   
+    def _get_hook(self, train_fvectors, **train_params):
+    
+        nvectors , vsize = train_fvectors.shape
+        
+        v_sub = train_params['v_sub']
+        v_div = train_params['v_div']
+        eigvectors = train_params['eigvectors']
+            
+        if nvectors < vsize:
+            hook = lambda vector: scipy.dot(((vector-v_sub) / v_div), eigvectors)
+        else:
+            hook = lambda vector: ((vector-v_sub) / v_div)
+            
+        return hook
+            
         
     def _test_svm(self,test_fvectors,test_flabels,clas):    
-        test_data = self._get_data(test_fvectors,test_flabels)
+        test_data = self._get_sparse_data(test_fvectors,test_flabels)
         
         self._labels = clas.labels.classLabels
         
@@ -221,6 +234,16 @@ class V1S(object):
                                                   L=flabels)     
         return data
         
+    def _get_sparse_data(self,fvectors,flabels):
+        print "creating dataset..."
+        if PyML.__version__ < "0.7.0":
+            data = PyML.datafunc.SparseDataSet(fvectors.astype(scipy.double),
+                                                L=flabels)
+        else:
+            data = PyML.containers.SparseDataSet(fvectors.astype(scipy.double),
+                                                  L=flabels)     
+        return data
+        
         
     def _train_svm(self,train_fvectors,train_flabels,classlist_dict):     
         train_data = self._get_data(train_fvectors,train_flabels)
@@ -231,9 +254,9 @@ class V1S(object):
         else:
             clas = PyML.svm.SVM()
         print "training svm..."
-        clas.train(train_data)
+        clas.train(train_data,saveSpace=False)
         
-        return clas
+        return clas, train_data
    
    
     def _safety_check(self,test_fnames,train_fnames):
@@ -527,5 +550,198 @@ class V1S(object):
         return self._filt_l
        
        
-class V1S_seq(object):
-    pass       
+
+#=-=-=-=-=-=-=-=-=-=Sequential code=-=-=-=-=-=-=-=-=-=-=-=-=-=       
+       
+@activate(lambda x : (x[0],x[1]), lambda x : x[2])       
+def shuffle_images(param_fname,img_path,result_file):
+    
+    V = V1S(param_fname, img_path)
+    
+    filelists_dict = V._shuffle_images()
+    
+    F = open(result_file,'w')
+    pickle.dump(filelists_dict,F)
+    F.close()
+    
+
+@activate(lambda x : (x[0],x[1],x[2]), lambda x : x[3])      
+def get_training_examples(param_fname,img_path, filelist_dict_file, result_file):
+
+    V = V1S(param_fname, img_path)
+ 
+    filelists_dict = pickle.load(open(filelist_dict_file))
+    
+    param_path = os.path.abspath(param_fname)
+    v1s_params = {}
+    execfile(param_path, {}, v1s_params)
+
+    model = v1s_params['model']
+    ntrain = V.ntrain
+    train_fvectors, train_flabels, train_fnames = \
+                         V._get_fvectors_flabels_fnames(filelists_dict,
+                                                          model, 0, ntrain)   
+ 
+ 
+    result_dict = {'train_fvectors' : train_fvectors, 'train_flabels' : train_flabels, 'train_fnames' : train_fnames}
+    
+    F = open(result_file,'w')
+    pickle.dump(result_dict,F)
+    F.close()
+    
+    
+@activate(lambda x : (x[0],x[1],x[2]), lambda x : x[3]) 
+def sphere(param_fname,img_path, train_examples_file,result_file):
+    
+    V = V1S(param_fname, img_path)
+ 
+    training_examples = pickle.load(open(train_examples_file))
+    train_fvectors = training_examples['train_fvectors']
+        
+    #sphere the data
+    train_fvectors, v_sub, v_div = V._sphere(train_fvectors)
+ 
+    result_dict = {'train_fvectors' : train_fvectors, 'v_sub' : v_sub, 'v_div' : v_div}
+    
+    F = open(result_file,'w')
+    pickle.dump(result_dict,F)
+    F.close()
+     
+     
+@activate(lambda x : (x[0],x[1],x[2]), lambda x : x[3])     
+def dimr(param_fname,img_path, sphered_results_file, result_file):      
+        #reduce dimensions
+ 
+    V = V1S(param_fname, img_path)
+ 
+    sphered_results = pickle.load(open(sphered_results_file))
+    train_fvectors = sphered_results['train_fvectors']
+   
+    param_path = os.path.abspath(param_fname)
+    v1s_params = {}
+    execfile(param_path, {}, v1s_params)
+    
+    pca_threshold = v1s_params['pca_threshold']
+        
+    train_fvectors, eigvectors = V._dimr(train_fvectors,pca_threshold)
+ 
+    result_dict = {'train_fvectors' : train_fvectors, 'eigvectors' : eigvectors}    
+    F = open(result_file,'w')
+    pickle.dump(result_dict,F)
+    F.close()    
+        
+
+@activate(lambda x : (x[0],x[1],x[2],x[3],x[4]), lambda x : x[5]) 
+def train_svm(param_fname,img_path, filelists_dict_file, dimr_results_file, train_examples_file, classifier_file):        
+
+    V = V1S(param_fname, img_path)
+    
+    filelists_dict = pickle.load(open(filelists_dict_file))
+ 
+    dimr_results = pickle.load(open(dimr_results_file))
+    train_fvectors = dimr_results['train_fvectors']
+    
+    train_examples = pickle.load(open(train_examples_file))
+    train_flabels = train_examples['train_flabels']
+
+    classifier, train_data = V._train_svm(train_fvectors,train_flabels,filelists_dict) 
+        
+    classifier.save(classifier_file)
+    
+
+     
+@activate(lambda x : (x[0],x[1],x[2],x[3],x[4],x[5]), lambda x : x[6])     
+def get_testing_examples(param_fname,img_path, filelist_dict_file, train_examples_file, sphered_results_file, dimr_results_file, result_file): 
+
+    V = V1S(param_fname, img_path)
+ 
+    filelists_dict = pickle.load(open(filelist_dict_file))
+    
+    param_path = os.path.abspath(param_fname)
+    v1s_params = {}
+    execfile(param_path, {}, v1s_params)
+
+    model = v1s_params['model']
+    ntest = V.ntest
+    ntrain = V.ntrain
+
+    dimr_results = pickle.load(open(dimr_results_file))
+    train_fvectors = dimr_results['train_fvectors']
+    eigvectors = dimr_results['eigvectors']
+    
+    sphered_results = pickle.load(open(sphered_results_file))
+    v_sub = sphered_results['v_sub']
+    v_div = sphered_results['v_div']
+   
+    train_examples = pickle.load(open(train_examples_file))
+    train_fnames = train_examples['train_fnames']   
+    
+    #get hook
+    hook_params = {'v_sub': v_sub, 'v_div' : v_div, 'eigvectors' : eigvectors}
+    hook = V._get_hook(train_fvectors,**hook_params) 
+     
+    # -- Get testing examples  
+    test_fvectors, test_flabels, test_fnames = \
+                   V._get_fvectors_flabels_fnames(filelists_dict, model,
+                                                     ntrain, ntrain+ntest,
+                                                     hook)
+    
+    #safety check
+    V._safety_check(test_fnames,train_fnames)
+    
+    
+    result_dict = {'test_fvectors' : test_fvectors, 'test_flabels' : test_flabels, 'test_fnames' : test_fnames}
+    
+    F = open(result_file,'w')
+    pickle.dump(result_dict,F)
+    F.close()   
+    
+
+@activate(lambda x : (x[0],x[1],x[2],x[3]), lambda x : x[4])     
+def test_svm(param_fname,img_path,test_examples_file,classifier_file,result_file):
+
+    V = V1S(param_fname, img_path)
+ 
+    test_examples = pickle.load(open(test_examples_file))
+    test_fvectors = test_examples['test_fvectors']
+    test_flabels = test_examples['test_flabels']
+
+    classifier = PyML.classifiers.svm.loadSVM(classifier_file,labelsColumn=1)
+    
+    results = V._test_svm(test_fvectors,test_flabels,classifier)
+ 
+    F = open(result_file,'w')
+    pickle.dump(results,F)
+    F.close()   
+    
+    
+    
+def trial_protocol(param_fname,img_path,result_dir,prefix = '',make_container = True):
+
+    if prefix != '':
+        prefix += '_'
+
+    filelist_dict_file = os.path.join(result_dir,prefix + 'filelists_dict.pickle')
+    train_examples_file = os.path.join(result_dir,prefix + 'train_examples.pickle')
+    classifier_file = os.path.join(result_dir,prefix + 'classifier.pickle')
+    sphered_results_file = os.path.join(result_dir,prefix + 'sphered_results.pickle')
+    dimr_results_file = os.path.join(result_dir,prefix + 'dimr_results.pickle')
+    test_examples_file = os.path.join(result_dir,prefix + 'test_examples.pickle')
+    final_results_file = os.path.join(result_dir,prefix + 'final_results.pickle')
+
+
+    D = []
+    
+    if make_container:
+        D += [(prefix + 'initialize',MakeDir,(result_dir,))]
+    
+    D += [(prefix + 'shuffle_images',shuffle_images,(param_fname,img_path,filelist_dict_file)),
+          (prefix + 'get_training_examples',get_training_examples,(param_fname,img_path, filelist_dict_file, train_examples_file)),
+          (prefix + 'sphere', sphere, (param_fname,img_path, train_examples_file,sphered_results_file)),
+          (prefix + 'dimr', dimr, (param_fname,img_path, sphered_results_file, dimr_results_file)),
+          (prefix + 'train_svm', train_svm, (param_fname,img_path, filelist_dict_file, dimr_results_file, train_examples_file, classifier_file)),
+          (prefix + 'get_testing_examples', get_testing_examples, (param_fname,img_path, filelist_dict_file, train_examples_file, sphered_results_file, dimr_results_file, test_examples_file)),
+          (prefix + 'test_svm', test_svm, (param_fname,img_path,test_examples_file,classifier_file,final_results_file))]
+    
+    return D    
+    
