@@ -15,9 +15,9 @@ import scipy as N
 # -- testing protocol
 protocol = {
     # number of training examples
-    'ntrain':3,
+    'ntrain':15,
     # number of testing examples
-    'ntest':5,
+    'ntest':30,
     # number of trials
     'ntrials':10,
     # random seed
